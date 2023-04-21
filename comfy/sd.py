@@ -15,6 +15,20 @@ from . import utils
 from . import clip_vision
 from . import gligen
 
+def load_torch_file(ckpt):
+    if ckpt.lower().endswith(".safetensors"):
+        import safetensors.torch
+        sd = safetensors.torch.load_file(ckpt, device="cpu")
+    else:
+        pl_sd = torch.load(ckpt, map_location="cpu")
+        if "global_step" in pl_sd:
+            print(f"Global Step: {pl_sd['global_step']}")
+        if "state_dict" in pl_sd:
+            sd = pl_sd["state_dict"]
+        else:
+            sd = pl_sd
+    return sd
+
 def load_model_weights(model, sd, verbose=False, load_state_dict_to=[]):
     m, u = model.load_state_dict(sd, strict=False)
 
@@ -42,6 +56,31 @@ def load_model_weights(model, sd, verbose=False, load_state_dict_to=[]):
             sd[keys_to_replace[x]] = sd.pop(x)
 
     sd = utils.transformers_convert(sd, "cond_stage_model.model", "cond_stage_model.transformer.text_model", 24)
+
+    resblock_to_replace = {
+        "ln_1": "layer_norm1",
+        "ln_2": "layer_norm2",
+        "mlp.c_fc": "mlp.fc1",
+        "mlp.c_proj": "mlp.fc2",
+        "attn.out_proj": "self_attn.out_proj",
+    }
+
+    for resblock in range(24):
+        for x in resblock_to_replace:
+            for y in ["weight", "bias"]:
+                k = "cond_stage_model.model.transformer.resblocks.{}.{}.{}".format(resblock, x, y)
+                k_to = "cond_stage_model.transformer.text_model.encoder.layers.{}.{}.{}".format(resblock, resblock_to_replace[x], y)
+                if k in sd:
+                    sd[k_to] = sd.pop(k)
+
+        for y in ["weight", "bias"]:
+            k_from = "cond_stage_model.model.transformer.resblocks.{}.attn.in_proj_{}".format(resblock, y)
+            if k_from in sd:
+                weights = sd.pop(k_from)
+                for x in range(3):
+                    p = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
+                    k_to = "cond_stage_model.transformer.text_model.encoder.layers.{}.{}.{}".format(resblock, p[x], y)
+                    sd[k_to] = weights[1024*x:1024*(x + 1)]
 
     for x in load_state_dict_to:
         x.load_state_dict(sd, strict=False)
@@ -257,20 +296,30 @@ class ModelPatcher:
     def model_dtype(self):
         return self.model.diffusion_model.dtype
 
-    def add_patches(self, patches, strength=1.0):
+    def add_patches(self, patches, strength=1.0, block_weights={}):
         p = {}
         model_sd = self.model.state_dict()
         for k in patches:
             if k in model_sd:
-                p[k] = patches[k]
-        self.patches += [(strength, p)]
+                # block_key pattern is (input_blocks|output_blocks|middle).(block number)
+                sk = k.split(".")
+                block_key = ".".join(sk[2:4])
+                if block_weights.__contains__(block_key):
+                    # apply block weights
+                    p[k] = (strength * block_weights[block_key], patches[k])
+                else:
+                    # apply only base strength
+                    p[k] = (strength, patches[k])
+
+        self.patches += [p]
         return p.keys()
 
     def patch_model(self):
         model_sd = self.model.state_dict()
         for p in self.patches:
-            for k in p[1]:
-                v = p[1][k]
+
+            for k in p:
+                v = p[k][1]
                 key = k
                 if key not in model_sd:
                     print("could not patch. key doesn't exist in model:", k)
@@ -280,7 +329,7 @@ class ModelPatcher:
                 if key not in self.backup:
                     self.backup[key] = weight.clone()
 
-                alpha = p[0]
+                alpha = p[k][0]
 
                 if len(v) == 4: #lora/locon
                     mat1 = v[0]
@@ -319,12 +368,12 @@ class ModelPatcher:
 
         self.backup = {}
 
-def load_lora_for_models(model, clip, lora_path, strength_model, strength_clip):
+def load_lora_for_models(model, clip, lora_path, strength_model, strength_clip, block_weights):
     key_map = model_lora_keys(model.model)
     key_map = model_lora_keys(clip.cond_stage_model, key_map)
     loaded = load_lora(lora_path, key_map)
     new_modelpatcher = model.clone()
-    k = new_modelpatcher.add_patches(loaded, strength_model)
+    k = new_modelpatcher.add_patches(loaded, strength_model, block_weights)
     new_clip = clip.clone()
     k1 = new_clip.add_patches(loaded, strength_clip)
     k = set(k)
