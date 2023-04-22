@@ -1,6 +1,8 @@
 :root {
-	--fg-color: #000;
-	--bg-color: #fff;
+	--fg-color: #d5d5d5;
+	--bg-color: #202020;
+	--sel-color: #7c4141;
+	--item-color: #252525;
 	--comfy-menu-bg: #353535;
 	--comfy-input-bg: #222;
 	--input-text: #ddd;
@@ -15,6 +17,49 @@
 		--fg-color: #fff;
 		--bg-color: #202020;
 	}
+}
+
+.topMenu{
+	position: fixed;
+	width: 100%;
+	top: 0;
+	left:0;
+	background: var(--bg-color);
+	border-bottom : solid 1px var(--fg-color);
+	z-index: 3;
+}
+
+.comboBox{
+	width : 300px;
+	background : var(--bg-color);
+	color : var(--fg-color);
+}
+
+.button{
+	cursor : pointer;
+	border: solid 1px var(--fg-color);
+	border-radius : 3px;
+	padding : 2px;
+	margin-left: 5px;
+}
+
+.title{
+	text-align: center;
+	margin-right: 20px;
+}
+
+.workflowControlPanel{
+	text-align: center;
+}
+
+.FullWindow{
+	position: fixed;
+	width: 100%;
+	height: 100%;
+	top: 0;
+	left: -100%;
+	background: var(--bg-color);
+	z-index: 2;
 }
 
 body {
